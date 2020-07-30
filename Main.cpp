@@ -17,6 +17,7 @@ struct Options
 	std::vector<std::string> executableArgs;
 
 	bool useSuffixes = false;
+	bool useAnotherConsole = false;
 
 	std::array<std::string, 4> suffixes { "ms", "s", "m", "h" };
 	std::array<int, 4>         dividers { 1000, 60, 60, 1 };
@@ -65,6 +66,10 @@ auto parseArgs(const std::vector<std::string>& args)
 			{
 				opt.useSuffixes = true;
 			}
+			else if (arg == "-n")
+			{
+				opt.useAnotherConsole = true;
+			}
 			else 
 			{
 				Log::warning() << "Unknown parameter " << arg << "\n";
@@ -110,44 +115,7 @@ auto getCurrentTimeMills()
 			.time_since_epoch());
 }
 
-auto createProcess(const Options& opt)
-{
-	auto* commandLine = getCommandLine(opt.executablePath, opt.executableArgs);
-
-	PROCESS_INFORMATION processInfo{};
-	STARTUPINFOA startUpInfo{};
-
-	Log::info() << "Starting " << commandLine << "\n";
-	Log::info() << std::string(25, '=') << "\n";
-
-	startUpInfo.cb = sizeof(startUpInfo);
-
-	auto start = getCurrentTimeMills();
-	auto createResult = CreateProcessA(nullptr,
-		commandLine,
-		nullptr, nullptr, false,
-		0, nullptr, nullptr,
-		&startUpInfo, &processInfo);
-
-	if (createResult)
-	{
-		WaitForSingleObject(processInfo.hProcess, INFINITE);
-	}
-	else
-	{
-		Log::error() << "Failed to create new process with executable " << opt.executablePath << "\n";
-		Log::winError(GetLastError()) << "\n";
-	}
-
-	auto end = getCurrentTimeMills();
-	delete[] commandLine;
-	CloseHandle(processInfo.hThread);
-	CloseHandle(processInfo.hProcess);
-
-	return end - start;
-}
-
-TimeValue convertTime(const Options &opt, uint64_t ms)
+TimeValue convertTime(const Options& opt, uint64_t ms)
 {
 	double value = double(ms);
 
@@ -165,6 +133,69 @@ TimeValue convertTime(const Options &opt, uint64_t ms)
 	}
 }
 
+
+auto createProcess(const Options& opt)
+{
+	auto* commandLine = getCommandLine(opt.executablePath, opt.executableArgs);
+
+	PROCESS_INFORMATION processInfo{};
+	STARTUPINFOA startUpInfo{};
+
+	Log::info() << "Starting " << commandLine << "\n";
+
+	if (!opt.useAnotherConsole)
+	{
+		Log::info() << std::string(25, '=') << "\n";
+	}
+
+	startUpInfo.cb = sizeof(startUpInfo);
+
+	auto start = getCurrentTimeMills();
+
+	auto processAttrs = 0;
+	
+	if (opt.useAnotherConsole)
+	{
+		processAttrs |= CREATE_NEW_CONSOLE;
+	}
+
+	auto createResult = CreateProcessA(nullptr,
+		commandLine,
+		nullptr, nullptr, false, 
+		processAttrs, nullptr, nullptr,
+		&startUpInfo, &processInfo);
+
+	if (createResult)
+	{
+		if (opt.useAnotherConsole)
+		{
+			while (WaitForSingleObject(processInfo.hProcess, 100) == WAIT_TIMEOUT)
+			{
+				auto current = getCurrentTimeMills();
+				auto delta = current - start;
+				auto time = convertTime(opt, delta.count());
+				std::cout << "Execution time: " << time.value << time.suffix << "\r";
+			}
+		}
+		else 
+		{
+			WaitForSingleObject(processInfo.hProcess, INFINITE);
+		}
+	}
+	else
+	{
+		Log::error() << "Failed to create new process with executable " << opt.executablePath << "\n";
+		Log::winError(GetLastError()) << "\n";
+	}
+
+	auto end = getCurrentTimeMills();
+	delete[] commandLine;
+	CloseHandle(processInfo.hThread);
+	CloseHandle(processInfo.hProcess);
+
+	return end - start;
+}
+
 int main(int argc, const char* argv[])
 {
 	auto args = retrieveArgs(argc, argv);
@@ -175,10 +206,13 @@ int main(int argc, const char* argv[])
 		Log::error() << "Executable path must be specified\n";
 		return 1;
 	}
-	
+
 	auto delta = createProcess(opt);
 
-	Log::info() << std::string(25, '=') << "\n";
+	if (!opt.useAnotherConsole)
+	{
+		Log::info() << std::string(25, '=') << "\n";
+	}
 	Log::info() << "Process has been stopped\n";
 
 	auto tv = convertTime(opt, delta.count());
